@@ -1,0 +1,108 @@
+#!/bin/bash
+#
+# Dependencies: python3, python3-venv
+
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+Usage: $PROGRAM [OPTION]... PACKAGE...
+
+Install Python 3 packages in a virtual environment.
+
+This is a very minimal version of pipx.
+
+Optional arguments:
+  -q, --quiet            suppress output
+  -d, --package-dir=DIR  directory for packages (default: /opt/python/PACKAGE)
+  -p, --python=PATH      command or path to Python 3 (default: python3)
+  -h, --help             this help text
+
+Note: if --package-dir is not specified and more than one PACKAGE is specified,
+      --package-dir will use the first PACKAGE.
+
+Example:
+  $PROGRAM --package-dir=/usr/local/python/black black
+EOF
+}
+
+_error() {
+  [ $# -gt 0 ] && echo >&2 "$PROGRAM: $@"
+  echo >&2 "Try '$PROGRAM --help' for more information."
+  exit 1
+}
+
+_out() {
+  [ -n "$QUIET" ] || echo "$@"
+}
+
+PROGRAM=install-python-package
+QUIET=
+PACKAGE_ROOT_DIR=/opt/python
+PACKAGE_DIR=
+PYTHON=python3
+PACKAGES=()
+
+opts="$(
+  getopt -n $PROGRAM -o qd:p:h -l \
+    quiet,package-dir:,python:,help -- "$@"
+)" || _error
+eval set -- $opts
+
+while [ $# -gt 0 ]; do
+  ARG="$1"
+  shift
+  case "$ARG" in
+  -q | --quiet)
+    QUIET=1
+    ;;
+  -d | --package-dir)
+    PACKAGE_DIR="$1"
+    shift
+    ;;
+  -p | --python)
+    PYTHON="$1"
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --)
+    break
+    ;;
+  esac
+done
+
+while [ $# -gt 0 ]; do
+  PACKAGES+=("$1")
+  shift
+done
+
+[ ${#PACKAGES[@]} -eq 0 ] && _error "expected PACKAGE argument"
+[ -z "$PACKAGE_DIR" ] && PACKAGE_DIR="$PACKAGE_ROOT_DIR/${PACKAGES[0]}"
+
+if [ -n "$QUIET" ]; then
+  QUIET_ARG=-q
+else
+  QUIET_ARG=
+fi
+
+PIP="$PACKAGE_DIR/bin/pip"
+
+if [ ! -x "$PIP" ]; then
+  mkdir -p "$PACKAGE_DIR"
+  _out "Creating virtual environment: $PACKAGE_DIR"
+  "$PYTHON" -m venv "$PACKAGE_DIR"
+  _out "Installing/upgrading: pip, setuptools, wheel"
+  "$PIP" $QUIET_ARG install -U pip setuptools wheel
+else
+  _out "Virtual environment exists: $PACKAGE_DIR"
+fi
+
+for package in "${PACKAGES[@]}"; do
+  _out "Installing/upgrading: $package"
+  "$PIP" $QUIET_ARG install -U "$package"
+done
+
+exit 0

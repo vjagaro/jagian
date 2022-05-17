@@ -1,0 +1,157 @@
+#!/bin/bash
+#
+# Dependencies: curl or wget
+
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+Usage: $PROGRAM [OPTION]... URL
+
+Download the file at URL only if it is different than the local version.
+
+This will exit with code 200 if the local version exists and is not updated.
+If a new version is downloaded, this will exit with code 0 (success). In the
+case of an error from curl or wget, this will exit with that program's error
+code.
+
+Optional arguments:
+  -q, --quiet        suppress output
+  -o, --output=PATH  download file to PATH (default: basename of URL).
+  -h, --help         this help text
+EOF
+}
+
+_cleanup() {
+  [ -n "$TMP_HEADERS" -a -f "$TMP_HEADERS" ] && rm -f "$TMP_HEADERS"
+  [ -n "$TMP_OUTPUT" -a -f "$TMP_OUTPUT" ] && rm -f "$TMP_OUTPUT"
+}
+
+_error() {
+  [ $# -gt 0 ] && echo >&2 "$PROGRAM: $@"
+  echo >&2 "Try '$PROGRAM --help' for more information."
+  exit 1
+}
+
+_out() {
+  [ -n "$QUIET" ] || echo "$@"
+}
+
+PROGRAM=download-if-modified
+QUIET=
+OUTPUT=
+URL=
+TMP_HEADERS=
+TMP_OUTPUT=
+
+trap _cleanup EXIT
+
+opts="$(
+  getopt -n $PROGRAM -o qo:h -l quiet,output:,help -- "$@"
+)" || _error
+eval set -- $opts
+
+while [ $# -gt 0 ]; do
+  ARG="$1"
+  shift
+  case "$ARG" in
+  -q | --quiet)
+    QUIET=1
+    ;;
+  -o | --output)
+    OUTPUT="$1"
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --)
+    break
+    ;;
+  esac
+done
+
+URL="${1:-}"
+[ -z "$URL" ] && _error "expected PACKAGE argument"
+[ -z "$OUTPUT" ] && OUTPUT="$(basename "$(echo "$URL" | sed 's/\/+$//')")"
+
+if which curl >/dev/null; then
+  FETCHER=curl
+elif which wget >/dev/null; then
+  FETCHER=wget
+else
+  _error "curl or wget not found"
+fi
+
+fetch() {
+  local method="$1"
+  local output="${2:-}"
+
+  set +e
+  if [ $method = head ]; then
+    _out -n "Querying: $URL"
+    if [ $FETCHER = curl ]; then
+      (curl -sIL "$URL") >"$TMP_HEADERS"
+    else
+      (wget -qS --spider "$URL") 2>"$TMP_HEADERS"
+    fi
+  else
+    _out -n "Downloading: $URL"
+    if [ $FETCHER = curl ]; then
+      curl -sLD "$TMP_HEADERS" -o "$output" "$URL"
+    else
+      wget -qSO "$output" "$URL" 2>"$TMP_HEADERS"
+    fi
+  fi
+
+  local result=$?
+  set -e
+  _out
+
+  local status="$(cat "$TMP_HEADERS" | head -1 | sed -r 's/(^\s+|\s+$)//g' |
+    cut -d ' ' -f 2 | sed -r 's/[^0-9]+//g')"
+  local last_modified="$(cat "$TMP_HEADERS" | grep -iE "^\s*last-modified:" |
+    head -1 | sed -r 's/(^[^:]*:\s*|\s+$)//g')"
+  if [ -n "$last_modified" ]; then
+    REMOTE_TIME=$(date -d "$last_modified" +%s 2>/dev/null || true)
+  else
+    REMOTE_TIME=
+  fi
+
+  if [ $result -ne 0 ]; then
+    _out >&2 "ERROR: $FETCHER returned $result"
+    exit $result
+  elif [ -z "$status" ]; then
+    _out >&2 "ERROR: invalid status"
+    exit 4
+  elif [ $status -ge 400 ]; then
+    _out >&2 "ERROR: got HTTP response $status"
+    exit 4
+  fi
+}
+
+TMP_HEADERS="$(mktemp)"
+
+if [ -f "$OUTPUT" ]; then
+  fetch head
+  LOCAL_TIME="$(date -r "$OUTPUT" +%s)"
+  if [ -n "$REMOTE_TIME" ] && [ "$REMOTE_TIME" -eq "$LOCAL_TIME" ]; then
+    _out "Not modified."
+    exit 200
+  fi
+fi
+
+TMP_OUTPUT=$(mktemp -p "$(dirname "$OUTPUT")" .download.XXXXXX)
+
+fetch full "$TMP_OUTPUT"
+
+if [ -n "$REMOTE_TIME" ]; then
+  touch -d "@$REMOTE_TIME" "$TMP_OUTPUT"
+fi
+
+chmod =rw "$TMP_OUTPUT"
+mv -f "$TMP_OUTPUT" "$OUTPUT"
+_out "Saved: $OUTPUT"
+
+exit 0

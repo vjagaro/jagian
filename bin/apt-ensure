@@ -1,0 +1,54 @@
+#!/bin/bash
+
+set -euo pipefail
+
+PROGRAM=apt-ensure
+PACKAGES=()
+OPTIONS=()
+CHECK=
+
+usage() {
+  cat <<EOF
+Usage: $PROGRAM [OPTION]... PACKAGE...
+
+If PACKAGE(s) are not installed, install it with apt-get install.
+
+This is convienence tool to more quickly install packages in automated scripts.
+In addition DEBIAN_FRONTEND=noninteractive and -y are specified. All options
+will be passed to apt-get. 
+
+Optional arguments:
+  -h, --help         this help text
+
+Example:
+  $PROGRAM python3 python3-dev
+EOF
+}
+
+_error() {
+  [ $# -gt 0 ] && echo >&2 "$PROGRAM: $@"
+  echo >&2 "Try '$PROGRAM --help' for more information."
+  exit 1
+}
+
+for arg in "$@"; do
+  if [ "$arg" = -h -o "$arg" = --help ]; then
+    usage
+    exit 0
+  elif [[ "$arg" =~ ^- ]]; then
+    OPTIONS+=("$arg")
+  else
+    CHECK=1
+    dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q ' installed' ||
+      PACKAGES+=("$arg")
+  fi
+done
+
+if [ -z "$CHECK" ]; then
+  _error "expected PACKAGE argument"
+elif [ ${#PACKAGES[@]} -gt 0 ]; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    "${OPTIONS[@]}" "${PACKAGES[@]}"
+else
+  exit 0
+fi

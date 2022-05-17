@@ -1,0 +1,30 @@
+#!/bin/sh
+
+set -eu
+
+PROGRAM=apt-installed
+
+usage() {
+  cat <<EOF
+Usage: $PROGRAM PACKAGE
+
+Return an error exit code if PACKAGE is not installed.
+
+Optional arguments:
+  -h, --help         this help text
+
+Example:
+  $PROGRAM python3 || apt-get install -y python3
+EOF
+}
+
+if [ $# -eq 0 ]; then
+  echo >&2 "$PROGRAM: expected PACKAGE argument"
+  echo >&2 "Try '$PROGRAM --help' for more information."
+  exit 1
+elif [ "$1" = -h -o "$1" = --help ]; then
+  usage
+  exit 0
+else
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q ' installed'
+fi

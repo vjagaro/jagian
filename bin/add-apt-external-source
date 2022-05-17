@@ -1,0 +1,131 @@
+#!/bin/bash
+#
+# Dependencies: gpg, curl or wget
+
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+Usage: $PROGRAM [OPTION]... NAME KEYRING_URL DEB_LINE
+
+Add a keyring and sources to an external apt repository.
+
+The % character in DEB_LINE will be substituted with signed-by=KEYRING_PATH.
+
+Optional arguments:
+  -q, --quiet         suppress output
+  -k, --keyrings=DIR  the keyrings directory (default: /usr/share/keyrings)
+  -s, --sources=DIR   the sources directory (default: /etc/apt/sources.list.d)
+  -h, --help          this help text
+
+Example:
+  $PROGRAM nodejs \\
+    https://deb.nodesource.com/gpgkey/nodesource.gpg.key \\
+    "deb [%] https://deb.nodesource.com/node_18.x \$(lsb_release -sc) main"
+EOF
+}
+
+_cleanup() {
+  [ -n "$TMP" -a -f "$TMP" ] && rm -f "$TMP"
+}
+
+_error() {
+  [ $# -gt 0 ] && echo >&2 "$PROGRAM: $@"
+  echo >&2 "Try '$PROGRAM --help' for more information."
+  exit 1
+}
+
+_out() {
+  [ -n "$QUIET" ] || echo "$@"
+}
+
+PROGRAM=add-apt-external-source
+QUIET=
+KEYRINGS_DIR=/usr/share/keyrings
+SOURCES_DIR=/etc/apt/sources.list.d
+TMP=
+
+trap _cleanup EXIT
+
+opts="$(
+  getopt -n $PROGRAM -o qk:s:h -l quiet,keyrings:,sources:,help -- "$@"
+)" || _error
+eval set -- $opts
+
+while [ $# -gt 0 ]; do
+  ARG="$1"
+  shift
+  case "$ARG" in
+  -q | --quiet)
+    QUIET=1
+    ;;
+  -k | --keyrings)
+    KEYRINGS_DIR="$1"
+    shift
+    ;;
+  -k | --sources)
+    SOURCES_DIR="$1"
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --)
+    break
+    ;;
+  esac
+done
+
+if which curl >/dev/null; then
+  FETCHER=curl
+elif which wget >/dev/null; then
+  FETCHER=wget
+else
+  _error "curl or wget not found"
+fi
+
+if [ $# -ne 3 ]; then
+  _error "expected NAME KEYRING_URL DEB_LINE arguments"
+fi
+
+NAME="$1"
+KEYRING_URL="$2"
+DEB_LINE="$3"
+KEYRING_PATH="$KEYRINGS_DIR/$NAME-archive-keyring.gpg"
+SOURCE_PATH="$SOURCES_DIR/$NAME.list"
+TMP="$(mktemp)"
+
+if [ ! -f "$KEYRING_PATH" ]; then
+  _out -n "Downloading: $KEYRING_URL"
+  if [ $FETCHER = curl ]; then
+    curl -sLo "$TMP" "$KEYRING_URL"
+  else
+    wget -qO "$TMP" "$KEYRING_URL"
+  fi
+  _out
+  _out "Adding keyring: $KEYRING_PATH"
+  mkdir -p "$(dirname $KEYRING_PATH)"
+  (
+    if file -b "$TMP" | grep -q '^PGP/GPG key public ring'; then
+      cat "$TMP"
+    else
+      gpg <"$TMP" --dearmor
+    fi
+  ) >"$KEYRING_PATH"
+fi
+
+echo "$DEB_LINE" | sed "s|%|signed-by=$KEYRING_PATH|" >"$TMP"
+
+if [ ! -f "$SOURCE_PATH" ] || ! diff -q "$TMP" "$SOURCE_PATH"; then
+  _out "Adding source: $SOURCE_PATH"
+  mkdir -p "$(dirname $SOURCE_PATH)"
+  cat "$TMP" >"$SOURCE_PATH"
+  if [ -n "$QUIET" ]; then
+    apt-get -qq update
+  else
+    apt-get update
+  fi
+fi
+
+exit 0
